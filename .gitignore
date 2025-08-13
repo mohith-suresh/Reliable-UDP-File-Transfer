@@ -1,0 +1,25 @@
+# OS
+.DS_Store
+
+# Build artifacts
+*.o
+*.obj
+*.out
+*.exe
+*.dSYM/
+build/
+bin/
+
+# C/C++ intermediates
+*.gch
+*.pch
+
+# Logs and temp
+*.log
+*.tmp
+*.swp
+
+# Misc
+core
+.vscode/
+.idea/

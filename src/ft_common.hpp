@@ -16,3 +16,19 @@ inline bool tagEq(const char* a, const char* b) {
 
 // Early constant: conservative UDP payload
 static constexpr int DEFAULT_CHUNK = 1460;
+
+// Initial control-plane messages
+#pragma pack(push, 1)
+struct InfoMsg {
+    char tag[4];           // "INFO"
+    uint32_t chunk_bytes;  // payload bytes per DATA
+    uint64_t file_size;    // total file size in bytes
+    uint32_t chunk_count;  // total number of chunks
+    uint64_t session_id;   // random session id
+};
+
+struct InfoAck {
+    char tag[4];           // "IACK"
+    uint64_t session_id;
+};
+#pragma pack(pop)

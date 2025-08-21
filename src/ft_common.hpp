@@ -31,4 +31,11 @@ struct InfoAck {
     char tag[4];           // "IACK"
     uint64_t session_id;
 };
+
+// Data plane frame header
+struct DataMsg {
+    char tag[4];   // "DATA"
+    uint32_t seq;  // chunk index
+    uint16_t payload; // bytes that follow
+};
 #pragma pack(pop)

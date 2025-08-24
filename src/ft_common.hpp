@@ -39,3 +39,16 @@ struct DataMsg {
     uint16_t payload; // bytes that follow
 };
 #pragma pack(pop)
+
+// Additional control messages
+#pragma pack(push, 1)
+struct CtrlMsg {
+    char tag[4];        // "P1DN" / "DONE" / "FIN " / "FACK"
+    uint64_t session_id;
+};
+
+struct NackMsgHdr {
+    char tag[4];   // "NACK"
+    uint16_t count; // number of seq ids following
+};
+#pragma pack(pop)

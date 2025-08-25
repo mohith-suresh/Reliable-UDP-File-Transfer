@@ -87,7 +87,46 @@ int main(int argc, char** argv) {
         if (sendto(s, pkt.data(), sizeof(DataMsg) + to_send, 0, (sockaddr*)&dst, sizeof(dst)) < 0) die("send DATA");
         if ((seq & 0xFF) == 0) std::this_thread::sleep_for(std::chrono::microseconds(100));
     }
-    std::cout << "Pass 1 complete." << std::endl;
+    std::cout << "Pass 1 complete. Signaling P1DN..." << std::endl;
+
+    // Signal end of pass1
+    CtrlMsg p1{}; std::memcpy(p1.tag, "P1DN", 4); p1.session_id = session_id;
+    for (int i = 0; i < 3; ++i) { if (sendto(s, &p1, sizeof(p1), 0, (sockaddr*)&dst, sizeof(dst)) < 0) die("send P1DN"); }
+
+    // Handle NACKs and retransmit until DONE
+    while (true) {
+        char rbuf[4096 + 2048];
+        ssize_t rn = recvfrom(s, rbuf, sizeof(rbuf), 0, nullptr, nullptr);
+        if (rn < 0) die("recv NACK/DONE");
+        if (rn >= (ssize_t)sizeof(CtrlMsg)) {
+            auto* c = reinterpret_cast<const CtrlMsg*>(rbuf);
+            if (tagEq(c->tag, "DONE") && c->session_id == session_id) break;
+        }
+        if (rn >= (ssize_t)sizeof(NackMsgHdr)) {
+            auto* h = reinterpret_cast<const NackMsgHdr*>(rbuf);
+            if (!tagEq(h->tag, "NACK")) continue;
+            size_t count = h->count;
+            if (sizeof(NackMsgHdr) + count * sizeof(uint32_t) > (size_t)rn) continue;
+            auto* ids = reinterpret_cast<const uint32_t*>(rbuf + sizeof(NackMsgHdr));
+            for (size_t i = 0; i < count; ++i) {
+                uint32_t seq = ids[i];
+                if (seq >= chunk_count) continue;
+                size_t offset = static_cast<size_t>(seq) * chunk_bytes;
+                size_t remain = file_size > offset ? file_size - offset : 0;
+                size_t to_send = remain < chunk_bytes ? remain : chunk_bytes;
+                hdr->seq = seq;
+                hdr->payload = static_cast<uint16_t>(to_send);
+                if (to_send > 0) std::memcpy(pkt.data() + sizeof(DataMsg), filebuf.data() + offset, to_send);
+                if (sendto(s, pkt.data(), sizeof(DataMsg) + to_send, 0, (sockaddr*)&dst, sizeof(dst)) < 0) die("send RETRANS");
+            }
+        }
+    }
+
+    // FIN / FACK
+    CtrlMsg fin{}; std::memcpy(fin.tag, "FIN ", 4); fin.session_id = session_id;
+    for (int i = 0; i < 3; ++i) { if (sendto(s, &fin, sizeof(fin), 0, (sockaddr*)&dst, sizeof(dst)) < 0) die("send FIN"); }
+    CtrlMsg fack{}; recvfrom(s, &fack, sizeof(fack), 0, nullptr, nullptr);
+    std::cout << "Transfer complete." << std::endl;
     close(s);
     return 0;
 }

@@ -91,8 +91,68 @@ int main(int argc, char** argv) {
             last_data = std::chrono::steady_clock::now();
         }
     }
+    std::cout << "Pass 1 reception complete. Checking for missing chunks..." << std::endl;
+
+    auto compute_missing = [&](std::vector<uint32_t>& out_ids){
+        out_ids.clear();
+        for (uint32_t i = 0; i < info.chunk_count; ++i) if (!received[i]) out_ids.push_back(i);
+    };
+
+    std::vector<uint32_t> missing;
+    compute_missing(missing);
+    // NACK rounds
+    while (!missing.empty()) {
+        size_t sent = 0;
+        while (sent < missing.size()) {
+            size_t batch = std::min<size_t>(256, missing.size() - sent);
+            size_t sz = sizeof(NackMsgHdr) + batch * sizeof(uint32_t);
+            std::vector<char> pkt(sz);
+            auto* h = reinterpret_cast<NackMsgHdr*>(pkt.data());
+            std::memcpy(h->tag, "NACK", 4);
+            h->count = static_cast<uint16_t>(batch);
+            std::memcpy(pkt.data() + sizeof(NackMsgHdr), missing.data() + sent, batch * sizeof(uint32_t));
+            if (sendto(s, pkt.data(), pkt.size(), 0, (sockaddr*)&cli, cli_len) < 0) die("send NACK");
+            sent += batch;
+        }
+        // Receive retransmissions for a short window
+        auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+        while (std::chrono::steady_clock::now() < until) {
+            fd_set rfds; FD_ZERO(&rfds); FD_SET(s, &rfds);
+            timeval tv{}; tv.tv_sec = 0; tv.tv_usec = 50000; // 50ms
+            int pr = select(s+1, &rfds, nullptr, nullptr, &tv);
+            if (pr < 0) die("select retr");
+            if (pr == 0) continue;
+            ssize_t n = recvfrom(s, rbuf.data(), rbuf.size(), 0, (sockaddr*)&cli, &cli_len);
+            if (n >= (ssize_t)sizeof(DataMsg)) {
+                auto* d = reinterpret_cast<const DataMsg*>(rbuf.data());
+                if (!tagEq(d->tag, "DATA")) continue;
+                if (d->seq >= info.chunk_count) continue;
+                size_t avail = n > (ssize_t)sizeof(DataMsg) ? (size_t)n - sizeof(DataMsg) : 0;
+                size_t to_write = std::min<size_t>(avail, d->payload);
+                off_t off = static_cast<off_t>(d->seq) * info.chunk_bytes;
+                if (to_write > 0) {
+                    if (::pwrite(out, rbuf.data() + sizeof(DataMsg), to_write, off) < 0) die("pwrite retr");
+                    received[d->seq] = 1;
+                }
+            }
+        }
+        compute_missing(missing);
+    }
+
+    // DONE then FIN/FACK
+    CtrlMsg done{}; std::memcpy(done.tag, "DONE", 4); done.session_id = info.session_id;
+    for (int i = 0; i < 3; ++i) { if (sendto(s, &done, sizeof(done), 0, (sockaddr*)&cli, cli_len) < 0) die("send DONE"); }
+    CtrlMsg fin{};
+    while (true) {
+        ssize_t n = recvfrom(s, &fin, sizeof(fin), 0, (sockaddr*)&cli, &cli_len);
+        if (n < 0) die("recv FIN");
+        if (n >= (ssize_t)sizeof(CtrlMsg) && tagEq(fin.tag, "FIN ") && fin.session_id == info.session_id) break;
+    }
+    CtrlMsg fack{}; std::memcpy(fack.tag, "FACK", 4); fack.session_id = info.session_id;
+    for (int i = 0; i < 3; ++i) { if (sendto(s, &fack, sizeof(fack), 0, (sockaddr*)&cli, cli_len) < 0) die("send FACK"); }
+
     ::close(out);
     close(s);
-    std::cout << "Pass 1 reception complete." << std::endl;
+    std::cout << "Retransmissions complete. Transfer finished." << std::endl;
     return 0;
 }

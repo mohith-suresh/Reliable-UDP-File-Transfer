@@ -21,13 +21,28 @@ static void die(const char* msg) {
 }
 
 int main(int argc, char** argv) {
-    if (argc != 4) {
-        std::cerr << "Usage: " << argv[0] << " <input_file_path> <server_ip> <server_port>\n";
+    // Options: --chunk N, --verbose, --rate-mbit X
+    uint32_t opt_chunk = DEFAULT_CHUNK;
+    bool opt_verbose = false;
+    double opt_rate_mbit = 0.0;
+    int argi = 1;
+    auto next_val = [&](const char* opt){ if (argi + 1 >= argc) { std::cerr << "Missing value for " << opt << "\n"; std::exit(1);} return argv[++argi]; };
+    while (argi < argc && std::strncmp(argv[argi], "--", 2) == 0) {
+        std::string a = argv[argi];
+        if (a == "--chunk") { opt_chunk = static_cast<uint32_t>(std::stoul(next_val("--chunk"))); }
+        else if (a == "--verbose") { opt_verbose = true; }
+        else if (a == "--rate-mbit") { opt_rate_mbit = std::stod(next_val("--rate-mbit")); }
+        else if (a == "--help") { std::cout << "Usage: " << argv[0] << " [--chunk N] [--verbose] [--rate-mbit X] <input_file_path> <server_ip> <server_port>\n"; return 0; }
+        else { std::cerr << "Unknown option: " << a << "\n"; return 1; }
+        ++argi;
+    }
+    if (argc - argi != 3) {
+        std::cerr << "Usage: " << argv[0] << " [--chunk N] [--verbose] [--rate-mbit X] <input_file_path> <server_ip> <server_port>\n";
         return 1;
     }
-    const char* in_path = argv[1];
-    const char* ip = argv[2];
-    int port = std::stoi(argv[3]);
+    const char* in_path = argv[argi++];
+    const char* ip = argv[argi++];
+    int port = std::stoi(argv[argi++]);
 
     int s = socket(AF_INET, SOCK_DGRAM, 0);
     if (s < 0) die("socket");
@@ -44,8 +59,17 @@ int main(int argc, char** argv) {
     ifs.seekg(0, std::ios::beg);
     std::vector<unsigned char> filebuf(file_size);
     if (file_size > 0) ifs.read(reinterpret_cast<char*>(filebuf.data()), static_cast<std::streamsize>(file_size));
-    uint32_t chunk_bytes = DEFAULT_CHUNK;
+    uint32_t chunk_bytes = opt_chunk;
     uint32_t chunk_count = static_cast<uint32_t>((file_size + chunk_bytes - 1) / chunk_bytes);
+
+    // Optional pacing (best-effort)
+    if (opt_rate_mbit > 0.0) {
+#ifndef SO_MAX_PACING_RATE
+#define SO_MAX_PACING_RATE 47
+#endif
+        unsigned int rate_Bps = static_cast<unsigned int>(opt_rate_mbit * 1000000.0 / 8.0);
+        (void)setsockopt(s, SOL_SOCKET, SO_MAX_PACING_RATE, &rate_Bps, sizeof(rate_Bps));
+    }
 
     // Handshake: send INFO until IACK
     uint64_t session_id = 0xABCDEF1234567890ULL; // placeholder session id for early step
@@ -71,7 +95,7 @@ int main(int argc, char** argv) {
         ssize_t rn = recvfrom(s, &ack, sizeof(ack), 0, nullptr, nullptr);
         if (rn >= (ssize_t)sizeof(ack) && tagEq(ack.tag, "IACK") && ack.session_id == session_id) break;
     }
-    std::cout << "Handshake complete (IACK). Starting pass 1..." << std::endl;
+    if (opt_verbose) std::cout << "Handshake complete (IACK). Starting pass 1..." << std::endl;
 
     // Pass 1: send each chunk once
     std::vector<char> pkt(sizeof(DataMsg) + chunk_bytes);
@@ -87,7 +111,7 @@ int main(int argc, char** argv) {
         if (sendto(s, pkt.data(), sizeof(DataMsg) + to_send, 0, (sockaddr*)&dst, sizeof(dst)) < 0) die("send DATA");
         if ((seq & 0xFF) == 0) std::this_thread::sleep_for(std::chrono::microseconds(100));
     }
-    std::cout << "Pass 1 complete. Signaling P1DN..." << std::endl;
+    if (opt_verbose) std::cout << "Pass 1 complete. Signaling P1DN..." << std::endl;
 
     // Signal end of pass1
     CtrlMsg p1{}; std::memcpy(p1.tag, "P1DN", 4); p1.session_id = session_id;
@@ -126,7 +150,7 @@ int main(int argc, char** argv) {
     CtrlMsg fin{}; std::memcpy(fin.tag, "FIN ", 4); fin.session_id = session_id;
     for (int i = 0; i < 3; ++i) { if (sendto(s, &fin, sizeof(fin), 0, (sockaddr*)&dst, sizeof(dst)) < 0) die("send FIN"); }
     CtrlMsg fack{}; recvfrom(s, &fack, sizeof(fack), 0, nullptr, nullptr);
-    std::cout << "Transfer complete." << std::endl;
+    if (opt_verbose) std::cout << "Transfer complete." << std::endl;
     close(s);
     return 0;
 }

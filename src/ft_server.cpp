@@ -23,16 +23,26 @@ static void die(const char* msg) {
 }
 
 int main(int argc, char** argv) {
-    if (argc != 3) {
-        std::cerr << "Usage: " << argv[0] << " <output_file_path> <listen_port>\n";
-        return 1;
+    bool verbose = false;
+    int argi = 1;
+    while (argi < argc && std::strncmp(argv[argi], "--", 2) == 0) {
+        std::string a = argv[argi];
+        if (a == "--verbose") { verbose = true; }
+        else if (a == "--help") { std::cout << "Usage: " << argv[0] << " [--verbose] <output_file_path> <listen_port>\n"; return 0; }
+        else { std::cerr << "Unknown option: " << a << "\n"; return 1; }
+        ++argi;
     }
-    const char* out_path = argv[1]; // unused in early skeleton
-    (void)out_path;
-    int port = std::stoi(argv[2]);
+    if (argc - argi != 2) { std::cerr << "Usage: " << argv[0] << " [--verbose] <output_file_path> <listen_port>\n"; return 1; }
+    const char* out_path = argv[argi++];
+    int port = std::stoi(argv[argi++]);
 
     int s = socket(AF_INET, SOCK_DGRAM, 0);
     if (s < 0) die("socket");
+
+    // Increase socket buffers for robustness
+    int bufsize = 16 * 1024 * 1024;
+    (void)setsockopt(s, SOL_SOCKET, SO_RCVBUF, &bufsize, sizeof(bufsize));
+    (void)setsockopt(s, SOL_SOCKET, SO_SNDBUF, &bufsize, sizeof(bufsize));
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
@@ -40,7 +50,7 @@ int main(int argc, char** argv) {
     addr.sin_port = htons(port);
     if (bind(s, (sockaddr*)&addr, sizeof(addr)) < 0) die("bind");
 
-    std::cout << "Server listening on UDP port " << port << "...\n";
+    if (verbose) std::cout << "Server listening on UDP port " << port << "...\n";
     sockaddr_in cli{}; socklen_t cli_len = sizeof(cli);
 
     // Receive INFO
@@ -56,11 +66,13 @@ int main(int argc, char** argv) {
         if (sendto(s, &ack, sizeof(ack), 0, (sockaddr*)&cli, cli_len) < 0) die("send IACK");
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    std::cout << "Handshake complete: chunks=" << info.chunk_count << ", chunk_bytes=" << info.chunk_bytes << "\n";
+    if (verbose) std::cout << "Handshake complete: chunks=" << info.chunk_count << ", chunk_bytes=" << info.chunk_bytes << "\n";
 
     // Open output file and receive pass1 DATA
     int out = ::open(out_path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
     if (out < 0) die("open output");
+    // Best-effort pre-size the file
+    (void)ftruncate(out, static_cast<off_t>(info.file_size));
     std::vector<char> rbuf(sizeof(DataMsg) + info.chunk_bytes + 64);
     std::vector<uint8_t> received(info.chunk_count, 0);
     auto last_data = std::chrono::steady_clock::now();
@@ -91,7 +103,7 @@ int main(int argc, char** argv) {
             last_data = std::chrono::steady_clock::now();
         }
     }
-    std::cout << "Pass 1 reception complete. Checking for missing chunks..." << std::endl;
+    if (verbose) std::cout << "Pass 1 reception complete. Checking for missing chunks..." << std::endl;
 
     auto compute_missing = [&](std::vector<uint32_t>& out_ids){
         out_ids.clear();
@@ -153,6 +165,6 @@ int main(int argc, char** argv) {
 
     ::close(out);
     close(s);
-    std::cout << "Retransmissions complete. Transfer finished." << std::endl;
+    if (verbose) std::cout << "Retransmissions complete. Transfer finished." << std::endl;
     return 0;
 }

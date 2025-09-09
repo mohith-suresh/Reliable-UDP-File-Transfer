@@ -1,23 +1,26 @@
-// Minimal common definitions (initial scaffolding)
+// Minimal common definitions for the fresh UDP file transfer protocol
 #pragma once
 
 #include <cstdint>
 #include <cstring>
 
-// 4-byte ASCII tag helper
+// Message tags as 4-byte ASCII codes
 struct Tag {
     char v[4];
-    explicit Tag(const char* s) { std::memcpy(v, s, 4); }
+    Tag(const char* s) { std::memcpy(v, s, 4); }
 };
 
 inline bool tagEq(const char* a, const char* b) {
     return std::memcmp(a, b, 4) == 0;
 }
 
-// Early constant: conservative UDP payload
-static constexpr int DEFAULT_CHUNK = 1460;
+// Protocol constants
+static constexpr int DEFAULT_CHUNK = 1460;        // payload per DATA
+static constexpr int MAX_NACK_IDS_PER_MSG = 320;  // tune to keep UDP size < MTU
+static constexpr int INFO_REPEATS = 6;            // repeat INFO for reliability
+static constexpr int CTRL_REPEATS = 24;           // repeat P1DN/DONE/FIN for robustness
 
-// Initial control-plane messages
+// Wire messages (packed)
 #pragma pack(push, 1)
 struct InfoMsg {
     char tag[4];           // "INFO"
@@ -32,23 +35,21 @@ struct InfoAck {
     uint64_t session_id;
 };
 
-// Data plane frame header
 struct DataMsg {
-    char tag[4];   // "DATA"
-    uint32_t seq;  // chunk index
-    uint16_t payload; // bytes that follow
+    char tag[4];           // "DATA"
+    uint32_t seq;          // chunk id [0..chunk_count-1]
+    uint16_t payload;      // bytes valid in data[]
+    // Followed by payload bytes
 };
-#pragma pack(pop)
 
-// Additional control messages
-#pragma pack(push, 1)
 struct CtrlMsg {
-    char tag[4];        // "P1DN" / "DONE" / "FIN " / "FACK"
+    char tag[4];           // "P1DN" / "DONE" / "FIN " / "FACK"
     uint64_t session_id;
 };
 
 struct NackMsgHdr {
-    char tag[4];   // "NACK"
-    uint16_t count; // number of seq ids following
+    char tag[4];           // "NACK"
+    uint16_t count;        // how many seq ids follow
+    // Followed by count x uint32_t seq ids
 };
 #pragma pack(pop)

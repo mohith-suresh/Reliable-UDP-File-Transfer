@@ -1,9 +1,22 @@
-# Fast, Reliable UDP File Transfer (Fresh Implementation)
+# High‑Throughput, Low‑Latency, Reliable UDP File Transfer
 
-This is a clean-room implementation of a UDP-based, reliable file transfer tool
-designed for EE 542 Lab 2. It uses a simple custom protocol (INFO/DATA/NACK/FIN)
-with batched negative acknowledgements (NACK) for efficient recovery over
-lossy/high-latency links.
+Focused on lossy, high‑RTT networks. Delivers 100% reliable file transfers with selective‑repeat ARQ and batched NACKs, sustaining high throughput where TCP collapses under loss.
+
+Highlights
+- 100% reliable delivery on lossy WANs via selective‑repeat ARQ + batched NACKs
+- 59.5 Mbps at 200 ms RTT with 20% loss (lab emulation; see Report.pdf)
+- Up to 600× higher throughput vs loss‑based TCP in ~0.1 Mbps scenarios
+- Linux fast path: `sendmmsg` batching + optional `SO_ZEROCOPY` (kernel DMA) + `mmap`
+- Tunable chunk size for MTU 1500 and jumbo (9000), optional kernel pacing
+
+Best For
+- High‑BDP and lossy paths (satellite/WAN/LTE/Wi‑Fi mesh) moving large binaries, logs, or media
+- Controlled environments where you can tune MTU and pacing for maximum goodput
+
+How It Works (1‑pass + repair)
+- Flood pass: client streams `DATA` chunks once (pipelined)
+- Repair: server computes missing chunks and sends batched `NACK`s; client selectively retransmits
+- Completion: `DONE` → `FIN/FACK` to close the session
 
 ## Build
 
@@ -65,7 +78,7 @@ Notes
 - For best performance on high RTT/loss paths, prefer larger chunks with jumbo MTU to reduce syscalls/overhead.
 - If `SO_MAX_PACING_RATE` is unsupported, `--rate-mbit` is ignored; you can still rely on the app’s light pacing.
 - `--zerocopy` uses Linux `SO_ZEROCOPY` to reduce kernel data copies. It requires recent kernels and compatible NICs. If unavailable, the client automatically falls back to the normal path.
-`
+
 
 
 ## Protocol Summary (High-Level)
